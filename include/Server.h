@@ -7,10 +7,14 @@
 #include <arpa/inet.h>
 #include "EventLoop.h"
 using namespace std;
+class CanRuntime;
 class Server
 {
 public:
-    Server(int port,const string& ip="0.0.0.0");
+    Server(
+        int port,
+        const string& ip="0.0.0.0",
+        CanRuntime* can_runtime=nullptr);
     ~Server();
     bool init();
     void start();
@@ -25,6 +29,7 @@ private:
     static int listen_fd;
     struct sockaddr_in server_addr_;
     EventLoop* event_loop;
+    CanRuntime* can_runtime_;
 
 };
 #endif

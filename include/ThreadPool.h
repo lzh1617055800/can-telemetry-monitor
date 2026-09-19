@@ -23,4 +23,4 @@ private:
     condition_variable cv_;
     bool stop_;
 };
-#endif 
+#endif

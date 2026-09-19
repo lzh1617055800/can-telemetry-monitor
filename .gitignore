@@ -1,4 +1,6 @@
 build/
+build-*/
+benchmarks/
 CMakeFiles/
 CMakeCache.txt
 cmake_install.cmake
@@ -6,5 +8,11 @@ Makefile
 *.o
 *.obj
 *.swp
+*.pyc
+__pycache__/
+*.log
+.idea/
+.vscode/
+.DS_Store
 server.log
 cat

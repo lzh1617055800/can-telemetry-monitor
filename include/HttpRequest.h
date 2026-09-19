@@ -18,7 +18,7 @@ public:
     bool parse(const string& data);
     Method getMethod()const{return method;}
     Version getVersion()const{return version;}
-    const string& getPath()const{return path;}  
+    const string& getPath()const{return path;}
     const string& getHeader(const string& key)const;
     const string& getBody()const{return body;}
 private:

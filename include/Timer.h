@@ -5,6 +5,7 @@
 #include <ctime>
 #include <unordered_map>
 #include <vector>
+#include <mutex>
 using namespace std;
 struct TimerEvent
 {
@@ -27,6 +28,7 @@ public:
 private:
     priority_queue<TimerEvent,vector<TimerEvent>,greater<TimerEvent>> heap_;
     unordered_map<int, time_t> fd_expire_map_;
+    mutable mutex mutex_;
 };
 
 #endif

@@ -29,4 +29,4 @@ private:
 #define LOG_INFO(msg)  Logger::getInstance().log(LogLevel::INFO,  msg, __FILE__, __LINE__)
 #define LOG_WARN(msg)  Logger::getInstance().log(LogLevel::WARN,  msg, __FILE__, __LINE__)
 #define LOG_ERROR(msg) Logger::getInstance().log(LogLevel::ERROR, msg, __FILE__, __LINE__)
-#endif 
+#endif

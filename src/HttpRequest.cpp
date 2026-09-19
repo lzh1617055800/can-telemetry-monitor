@@ -80,6 +80,11 @@ bool HttpRequest::parseRequestLine(const string& line)
     {
         return false;
     }
+    string extra;
+    if(iss >> extra)
+    {
+        return false;
+    }
 
     transform(method_str.begin(), method_str.end(), method_str.begin(),
               [](unsigned char c) { return static_cast<char>(toupper(c)); });
@@ -108,6 +113,7 @@ bool HttpRequest::parseRequestLine(const string& line)
     else
     {
         version = Version::UNKNOWN;
+        return false;
     }
 
     return true;

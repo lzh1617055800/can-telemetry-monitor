@@ -10,8 +10,14 @@ using namespace std;
 
 int Server::listen_fd = -1;
 
-Server::Server(int port, const string& ip)
-    : port_(port), ip_(ip), event_loop(nullptr)
+Server::Server(
+    int port,
+    const string& ip,
+    CanRuntime* can_runtime)
+    : port_(port),
+      ip_(ip),
+      event_loop(nullptr),
+      can_runtime_(can_runtime)
 {
     memset(&server_addr_, 0, sizeof(server_addr_));
 }
@@ -86,7 +92,7 @@ bool Server::init()
         return false;
     }
 
-    event_loop = new EventLoop();
+    event_loop = new EventLoop(can_runtime_);
     event_loop->addEvent(listen_fd, EPOLLIN, nullptr);
     LOG_INFO("server initialized successfully, listening on " + ip_ + ":" + to_string(port_));
     return true;

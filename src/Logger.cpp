@@ -53,7 +53,7 @@ void Logger::log(LogLevel level,const string& message,const char* file,int line)
     if(level == LogLevel::ERROR)
     {
         cerr<<log_str<<endl;
-    }                
+    }
 }
 
 string Logger::levelToString(LogLevel level)

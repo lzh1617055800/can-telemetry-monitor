@@ -7,6 +7,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <iostream>
+#include <utility>
 #include <sys/epoll.h>
 
 using namespace std;
@@ -14,7 +15,8 @@ using namespace std;
 EventLoop* EventLoop::current_loop_ = nullptr;
 volatile sig_atomic_t EventLoop::stop_flag_ = 0;
 
-EventLoop::EventLoop()
+EventLoop::EventLoop(CanRuntime* can_runtime)
+    : can_runtime_(can_runtime)
 {
     epoll_fd = epoll_create(1024);
     if(epoll_fd == -1)
@@ -30,43 +32,90 @@ EventLoop::EventLoop()
 EventLoop::~EventLoop()
 {
     close(epoll_fd);
+    lock_guard<mutex> lock(conn_mutex_);
     for(auto& pair : conn_map)
     {
-        delete pair.second;
+        close(pair.first);
     }
+    conn_map.clear();
     current_loop_ = nullptr;
 }
 
-void EventLoop::addEvent(int fd, uint32_t event, Connection* conn)
+void EventLoop::addEvent(
+    int fd,
+    uint32_t event,
+    shared_ptr<Connection> conn)
 {
+    lock_guard<mutex> lock(conn_mutex_);
+
     struct epoll_event ep_event;
     memset(&ep_event, 0, sizeof(ep_event));
     ep_event.data.fd = fd;
     ep_event.events = event | EPOLLET;
 
-    if(conn_map.count(fd))
+    if(conn_map.find(fd) != conn_map.end())
     {
         epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ep_event);
     }
     else
     {
-        conn_map[fd] = conn;
+        conn_map.emplace(fd, std::move(conn));
         epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &ep_event);
         LOG_INFO("fd=" + to_string(fd) + " registered, event=" + to_string(event));
     }
 }
 
-void EventLoop::removeEvent(int fd)
+void EventLoop::updateEvent(
+    int fd,
+    uint32_t event,
+    Connection* expected)
 {
-    if(conn_map.count(fd))
     {
-        timer_.removeTimer(fd);
-        epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, nullptr);
-        delete conn_map[fd];
-        conn_map.erase(fd);
-        close(fd);
-        LOG_INFO("fd=" + to_string(fd) + " connection closed and removed");
+        lock_guard<mutex> lock(conn_mutex_);
+        auto it = conn_map.find(fd);
+        if(it == conn_map.end() ||
+           (expected != nullptr && it->second.get() != expected))
+        {
+            return;
+        }
     }
+
+    struct epoll_event ep_event;
+    memset(&ep_event, 0, sizeof(ep_event));
+    ep_event.data.fd = fd;
+    ep_event.events = event | EPOLLET;
+    epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &ep_event);
+}
+
+void EventLoop::removeEvent(int fd, Connection* expected)
+{
+    lock_guard<mutex> lock(conn_mutex_);
+    auto it = conn_map.find(fd);
+    if(it == conn_map.end())
+    {
+        return;
+    }
+
+    if(expected != nullptr && it->second.get() != expected)
+    {
+        return;
+    }
+
+    timer_.removeTimer(fd);
+    epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, nullptr);
+    conn_map.erase(it);
+    close(fd);
+    LOG_INFO("fd=" + to_string(fd) + " connection closed and removed");
+}
+
+bool EventLoop::isRegistered(
+    int fd,
+    const Connection* expected) const
+{
+    lock_guard<mutex> lock(conn_mutex_);
+    auto it = conn_map.find(fd);
+    return it != conn_map.end() &&
+           (expected == nullptr || it->second.get() == expected);
 }
 
 void EventLoop::loop()
@@ -74,7 +123,7 @@ void EventLoop::loop()
     LOG_INFO("event loop started");
     while(!stop_flag_)
     {
-        int num_events = epoll_wait(epoll_fd, events.data(), MAX_EVENTS, 1000);
+        int num_events = epoll_wait(epoll_fd, events.data(), MAX_EVENTS, 100);
         if(num_events == -1)
         {
             if(errno == EINTR)
@@ -88,14 +137,75 @@ void EventLoop::loop()
         auto expired_fds = timer_.tick();
         for(auto& fd : expired_fds)
         {
+            shared_ptr<Connection> connection;
+            {
+                lock_guard<mutex> lock(conn_mutex_);
+                auto connection_it = conn_map.find(fd);
+                if(connection_it != conn_map.end())
+                {
+                    connection = connection_it->second;
+                }
+            }
+
+            if(connection != nullptr && connection->isSse())
+            {
+                timer_.addTimer(fd, TIMEOUT_SEC);
+                continue;
+            }
+
             LOG_INFO("fd=" + to_string(fd) + " timed out");
             removeEvent(fd);
         }
 
+        dispatchSseEvents();
         handleEvents(num_events);
     }
 
     LOG_INFO("server is shutting down");
+}
+
+void EventLoop::dispatchSseEvents()
+{
+    vector<pair<int, shared_ptr<Connection>>> connections;
+    {
+        lock_guard<mutex> lock(conn_mutex_);
+        connections.reserve(conn_map.size());
+        for(const auto& item : conn_map)
+        {
+            connections.emplace_back(item.first, item.second);
+        }
+    }
+
+    vector<pair<int, Connection*>> overflowed_connections;
+
+    for(const auto& item : connections)
+    {
+        const int fd = item.first;
+        const shared_ptr<Connection>& connection = item.second;
+
+        if(connection == nullptr || !connection->isSse())
+        {
+            continue;
+        }
+
+        if(connection->pumpSse())
+        {
+            updateEvent(fd, EPOLLIN | EPOLLOUT, connection.get());
+        }
+
+        if(connection->sseOverflowed())
+        {
+            overflowed_connections.emplace_back(fd, connection.get());
+        }
+    }
+
+    for(const auto& item : overflowed_connections)
+    {
+        const int fd = item.first;
+        LOG_ERROR("SSE client exceeded pending buffer limit, fd=" +
+                  to_string(fd));
+        removeEvent(fd, item.second);
+    }
 }
 
 void EventLoop::handleEvents(int num_events)
@@ -111,17 +221,28 @@ void EventLoop::handleEvents(int num_events)
         }
         else if(revents & (EPOLLIN | EPOLLPRI | EPOLLOUT))
         {
-            Connection* conn = conn_map[fd];
+            shared_ptr<Connection> conn;
+            {
+                lock_guard<mutex> lock(conn_mutex_);
+                auto it = conn_map.find(fd);
+                if(it == conn_map.end())
+                {
+                    continue;
+                }
+                conn = it->second;
+            }
+
+            timer_.updateTimer(fd, TIMEOUT_SEC);
             if(thread_pool_)
             {
                 thread_pool_->submit([this, conn, revents]
                 {
-                    handleIOEvent(conn, revents);
+                    handleIOEvent(conn.get(), revents);
                 });
             }
             else
             {
-                handleIOEvent(conn, revents);
+                handleIOEvent(conn.get(), revents);
             }
         }
         else if(revents & EPOLLERR)
@@ -159,7 +280,10 @@ void EventLoop::handleNewConnection(int listen_fd)
         int flags = fcntl(conn_fd, F_GETFL, 0);
         fcntl(conn_fd, F_SETFL, flags | O_NONBLOCK);
 
-        Connection* conn = new Connection(conn_fd, this);
+        auto conn = make_shared<Connection>(
+            conn_fd,
+            this,
+            can_runtime_);
         addEvent(conn_fd, EPOLLIN, conn);
         timer_.addTimer(conn_fd, TIMEOUT_SEC);
     }
@@ -173,20 +297,22 @@ void EventLoop::handleIOEvent(Connection* conn, uint32_t revents)
     }
 
     int fd = conn->getFd();
-    timer_.updateTimer(fd, TIMEOUT_SEC);
+
+    if(revents & EPOLLERR)
+    {
+        LOG_ERROR("fd=" + to_string(fd) + " error event");
+        removeEvent(fd, conn);
+        return;
+    }
 
     if(revents & (EPOLLIN | EPOLLPRI))
     {
         conn->handleRead();
     }
-    else if(revents & EPOLLOUT)
+
+    if((revents & EPOLLOUT) != 0 && isRegistered(fd, conn))
     {
         conn->handleWrite();
-    }
-    else if(revents & EPOLLERR)
-    {
-        LOG_ERROR("fd=" + to_string(fd) + " error event");
-        removeEvent(fd);
     }
 }
 

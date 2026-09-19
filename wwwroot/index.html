@@ -3,19 +3,111 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>cpp_http_server</title>
+    <title>CAN Telemetry Monitor</title>
     <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-    <main class="card">
-        <p class="eyebrow">C++ HTTP Server</p>
-        <h1>欢迎访问我的 HTTP 服务器</h1>
-        <p class="lead">这是一个使用 C++17、epoll、Reactor 和线程池实现的轻量级 HTTP 服务端项目。</p>
-        <ul>
-            <li>支持静态文件访问</li>
-            <li>支持 POST 请求回显</li>
-            <li>支持超时连接清理</li>
-        </ul>
-    </main>
+<main class="page">
+    <header class="hero">
+        <div>
+            <p class="eyebrow">C++17 · SocketCAN · epoll HTTP</p>
+            <h1>CAN Telemetry Monitor</h1>
+            <p class="muted">vcan0 实时监控与远程发送演示</p>
+        </div>
+        <span id="status" class="status">连接中</span>
+    </header>
+
+    <section class="cards">
+        <article><span>接收帧数</span><strong id="totalFrames">0</strong></article>
+        <article><span>最近帧率</span><strong id="frameRate">0.00 fps</strong></article>
+        <article><span>估算总线负载</span><strong id="busLoad">0.00%</strong></article>
+    </section>
+
+    <section class="panel">
+        <div class="panel-title">
+            <h2>实时帧表</h2>
+            <label>ID 过滤 <input id="idFilter" placeholder="例如 0x123"></label>
+        </div>
+        <table>
+            <thead><tr><th>序号</th><th>时间(ns)</th><th>ID</th><th>DLC</th><th>数据</th></tr></thead>
+            <tbody id="frameRows"><tr><td colspan="5">等待 CAN 报文…</td></tr></tbody>
+        </table>
+    </section>
+
+    <section class="panel send-panel">
+        <div class="panel-title"><h2>发送 CAN 帧</h2><span class="muted">发送到当前 SocketCAN 接口</span></div>
+        <form id="sendForm">
+            <input id="sendId" value="0x123" aria-label="CAN ID">
+            <input id="sendData" value="11 22 33 44" aria-label="CAN data">
+            <button type="submit">发送</button>
+            <span id="sendResult" class="muted"></span>
+        </form>
+    </section>
+</main>
+<script>
+let after = 0;
+const rows = document.getElementById('frameRows');
+const status = document.getElementById('status');
+
+function parseNumber(value) {
+    return Number(value.trim());
+}
+
+function renderFrames(frames) {
+    if (!frames.length) return;
+    const filter = document.getElementById('idFilter').value.trim().toLowerCase();
+    for (const frame of frames) {
+        if (filter && frame.id_hex.toLowerCase() !== filter) continue;
+        const row = document.createElement('tr');
+        row.innerHTML = `<td>${frame.sequence}</td><td>${frame.timestamp_ns}</td>` +
+            `<td>${frame.id_hex}</td><td>${frame.dlc}</td>` +
+            `<td>${frame.data.map(v => v.toString(16).padStart(2, '0')).join(' ')}</td>`;
+        rows.prepend(row);
+    }
+    while (rows.children.length > 80) rows.lastElementChild.remove();
+}
+
+async function refresh() {
+    try {
+        const [framesResponse, statsResponse] = await Promise.all([
+            fetch(`/api/can/frames?after=${after}&limit=100`),
+            fetch('/api/can/stats')
+        ]);
+        if (!framesResponse.ok || !statsResponse.ok) throw new Error('HTTP API unavailable');
+        const framePayload = await framesResponse.json();
+        const stats = await statsResponse.json();
+        renderFrames(framePayload.frames);
+        for (const frame of framePayload.frames) after = Math.max(after, frame.sequence);
+        document.getElementById('totalFrames').textContent = stats.total_received_frames;
+        document.getElementById('frameRate').textContent = `${stats.receive_rate_fps.toFixed(2)} fps`;
+        document.getElementById('busLoad').textContent = `${stats.estimated_bus_load_percent.toFixed(2)}%`;
+        status.textContent = 'CAN 在线';
+        status.className = 'status online';
+    } catch (error) {
+        status.textContent = '连接失败';
+        status.className = 'status offline';
+    }
+}
+
+document.getElementById('sendForm').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const id = document.getElementById('sendId').value.trim();
+    const data = document.getElementById('sendData').value.trim().split(/\s+/).filter(Boolean).map(parseNumber);
+    const result = document.getElementById('sendResult');
+    try {
+        const response = await fetch('/api/can/send', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({id: id, extended: false, data: data})
+        });
+        result.textContent = response.ok ? '发送成功' : '发送失败';
+    } catch (error) {
+        result.textContent = '发送失败';
+    }
+});
+
+setInterval(refresh, 500);
+refresh();
+</script>
 </body>
 </html>

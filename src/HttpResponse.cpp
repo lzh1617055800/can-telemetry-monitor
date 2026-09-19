@@ -9,11 +9,12 @@ const unordered_map<int, string> HttpResponse::status_messages_ = {
     {403, "Forbidden"},
     {404, "Not Found"},
     {500, "Internal Server Error"},
+    {503, "Service Unavailable"},
 };
 
 HttpResponse::HttpResponse()
     :status_code_(200),status_message_("OK"){}
-    
+
 void HttpResponse::setStatusCode(int code)
 {
     status_code_ = code;
@@ -112,12 +113,12 @@ string HttpResponse::serialize() const
     if (headers_.find("Content-Length") == headers_.end()) {
         result += "Content-Length: " + to_string(body_.size()) + "\r\n";
     }
-    
+
     // 4. 空行（分隔头部和正文）
     result += "\r\n";
-    
+
     // 5. 响应体
     result += body_;
-    
+
     return result;
 }

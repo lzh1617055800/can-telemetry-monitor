@@ -7,6 +7,7 @@ Timer::Timer(){}
 
 void Timer::addTimer(int fd, int timeout_sec)
 {
+    lock_guard<mutex> lock(mutex_);
     time_t now = time(nullptr);
     time_t expire = now + timeout_sec;
     heap_.push({fd,expire});
@@ -15,6 +16,7 @@ void Timer::addTimer(int fd, int timeout_sec)
 
 void Timer::updateTimer(int fd,int timeout_sec)
 {
+    lock_guard<mutex> lock(mutex_);
     time_t now = time(nullptr);
     time_t expire = now + timeout_sec;
     heap_.push({fd,expire});
@@ -23,11 +25,13 @@ void Timer::updateTimer(int fd,int timeout_sec)
 
 void Timer::removeTimer(int fd)
 {
+    lock_guard<mutex> lock(mutex_);
     fd_expire_map_.erase(fd);
 }
 
 vector<int> Timer::tick()
 {
+    lock_guard<mutex> lock(mutex_);
     vector<int> expired_fd;
     time_t now = time(nullptr);
     while(!heap_.empty() && heap_.top().expire_time <= now)
